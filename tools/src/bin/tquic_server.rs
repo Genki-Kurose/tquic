@@ -404,6 +404,7 @@ struct Response {
     headers: Option<Vec<tquic::h3::Header>>,
     body: Bytes,
     body_written: usize,
+    dummy_total: usize,
 }
 
 #[derive(Default)]
@@ -548,6 +549,7 @@ impl ConnectionHandler {
                 headers: None,
                 body,
                 body_written: written,
+                dummy_total: 0,
             };
 
             self.responses.insert(stream_id, response);
@@ -605,7 +607,22 @@ impl ConnectionHandler {
         }
     }
 
-    fn build_h3_response(&self, headers: &[Header], data: &[u8]) -> (Vec<Header>, Bytes) {
+    fn parse_dummy_size(uri: &str) -> Option<usize> {
+       let file_name = uri.split('/').last().unwrap_or("");
+        let base = file_name.strip_suffix(".bin").unwrap_or(file_name);
+        let base = base.to_lowercase();
+        if base.ends_with('g') {
+            let num: usize = base[..base.len()-1].parse().ok()?;
+            Some(num * 1024 * 1024 * 1024)
+        } else if base.ends_with('m') {
+            let num: usize = base[..base.len()-1].parse().ok()?;
+            Some(num * 1024 * 1024)
+        } else {
+            None
+        }
+    }
+    
+    fn build_h3_response(&self, headers: &[Header], data: &[u8]) -> (Vec<Header>, Bytes, usize) {
         let mut path = "";
         let mut range_header = None;
         let mut method = "";
@@ -621,8 +638,16 @@ impl ConnectionHandler {
 
         match method {
             "GET" => {
+                let clean_path = path.trim_start_matches('/');
+                if let Some(size) = Self::parse_dummy_size(clean_path) {
+                    let headers = vec![
+                        tquic::h3::Header::new(b":status", b"200"),
+                        tquic::h3::Header::new(b"server", b"tquic"),
+                        tquic::h3::Header::new(b"content-length", size.to_string().as_bytes()),
+                    ];
+                    return (headers, Bytes::new(), size);
+                }
                 let path = Self::generate_file_path(path, &self.root);
-
                 if let Ok(file) = std::fs::File::open(&path) {
                     let file_size = file.metadata().unwrap().len();
 
@@ -652,7 +677,7 @@ impl ConnectionHandler {
                                             len.to_string().as_bytes(),
                                         ),
                                     ];
-                                    return (headers, Bytes::from(buffer));
+                                    return (headers, Bytes::from(buffer), 0);
                                 }
                             }
                             Err(e) => {
@@ -668,7 +693,7 @@ impl ConnectionHandler {
                                             format!("bytes */{}", file_size).as_bytes(),
                                         ),
                                     ];
-                                    return (headers, Bytes::new());
+                                    return (headers, Bytes::new(), 0);
                                 }
                                 // Fall through to serve the whole file with 200 OK for multi-part
                             }
@@ -686,7 +711,7 @@ impl ConnectionHandler {
                             body.len().to_string().as_bytes(),
                         ),
                     ];
-                    (headers, Bytes::from(body))
+                    (headers, Bytes::from(body), 0)
                 } else {
                     // File not found
                     let body = b"Not Found!".to_vec();
@@ -698,7 +723,7 @@ impl ConnectionHandler {
                             body.len().to_string().as_bytes(),
                         ),
                     ];
-                    (headers, Bytes::from(body))
+                    (headers, Bytes::from(body), 0)
                 }
             }
             "POST" => {
@@ -711,7 +736,7 @@ impl ConnectionHandler {
                     tquic::h3::Header::new(b"server", b"tquic"),
                     tquic::h3::Header::new(b"content-length", body.len().to_string().as_bytes()),
                 ];
-                (headers, Bytes::from(body))
+                (headers, Bytes::from(body), 0)
             }
             _ => {
                 // Method not allowed
@@ -720,12 +745,12 @@ impl ConnectionHandler {
                     tquic::h3::Header::new(b"server", b"tquic"),
                     tquic::h3::Header::new(b"content-length", b"18"),
                 ];
-                (headers, Bytes::from_static(b"Method Not Allowed"))
+                (headers, Bytes::from_static(b"Method Not Allowed"), 0)
             }
         }
     }
 
-    fn process_h3_request(
+fn process_h3_request(
         &mut self,
         headers: &[Header],
         conn: &mut Connection,
@@ -735,42 +760,33 @@ impl ConnectionHandler {
         conn.stream_shutdown(stream_id, tquic::Shutdown::Read, 0)?;
         self.processed_requests = std::cmp::max(self.processed_requests, stream_id);
 
-        let (headers, body) = self.build_h3_response(headers, data);
+        // 修正: 戻り値の3つ目（dummy_total）を正しく受け取る
+        let (headers, body, dummy_total) = self.build_h3_response(headers, data);
         let h3_conn = self.h3_conn.as_mut().unwrap();
+
         match h3_conn.send_headers(conn, stream_id, &headers, false) {
-            Ok(v) => v,
+            Ok(_) => {
+                let response = Response {
+                    headers: None,
+                    body,
+                    body_written: 0,
+                    dummy_total, // 修正: 受け取ったダミーサイズをセット
+                };
+                self.responses.insert(stream_id, response);
+                self.send_h3_response(conn, stream_id); // 以降の送信ループ処理へ移譲
+            }
             Err(tquic::h3::Http3Error::StreamBlocked) => {
                 let response = Response {
                     headers: Some(headers),
                     body,
                     body_written: 0,
+                    dummy_total, // 修正: 受け取ったダミーサイズをセット
                 };
-
                 self.responses.insert(stream_id, response);
-                return Ok(());
             }
             Err(e) => {
                 return Err(format!("{} stream send failed {:?}", conn.trace_id(), e).into());
             }
-        }
-
-        let written = match h3_conn.send_body(conn, stream_id, body.clone(), true) {
-            Ok(v) => v,
-            Err(tquic::h3::Http3Error::Done) => 0,
-            Err(e) => {
-                return Err(format!("{} stream send failed {:?}", conn.trace_id(), e).into());
-            }
-        };
-        if written < body.len() {
-            _ = conn.stream_want_write(stream_id, true);
-
-            let response = Response {
-                headers: None,
-                body,
-                body_written: written,
-            };
-
-            self.responses.insert(stream_id, response);
         }
 
         Ok(())
@@ -904,6 +920,46 @@ impl ConnectionHandler {
             }
         }
         response.headers = None;
+        
+        if response.dummy_total > 0 {
+            let chunk_size = 65536; // 64KBの固定長使い回しバッファ
+            let dummy_chunk = Bytes::from(vec![0u8; chunk_size]);
+
+            while response.body_written < response.dummy_total {
+                let remain = response.dummy_total - response.body_written;
+                let to_send = std::cmp::min(chunk_size, remain);
+                let is_fin = (response.body_written + to_send) >= response.dummy_total;
+
+                let written = match h3_conn.send_body(
+                    conn,
+                    stream_id,
+                    dummy_chunk.slice(0..to_send),
+                    is_fin,
+                ) {
+                    Ok(v) => v,
+                    Err(tquic::h3::Http3Error::Done) => return, // バッファフル。次回イベントで再開
+                    Err(e) => {
+                        self.responses.remove(&stream_id);
+                        error!("{} stream send failed {:?}", conn.trace_id(), e);
+                        return;
+                    }
+                };
+
+                if written == 0 {
+                    return;
+                }
+
+                response.body_written += written;
+                if written < to_send {
+                    return; // 一部のみ書き込めた場合も次回を待つ
+                }
+            }
+
+            if response.body_written >= response.dummy_total {
+                self.responses.remove(&stream_id);
+            }
+            return;
+        }
 
         let written = match h3_conn.send_body(
             conn,
