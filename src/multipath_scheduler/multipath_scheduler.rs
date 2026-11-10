@@ -20,6 +20,7 @@ use std::time::Instant;
 use self::scheduler_minrtt::*;
 use self::scheduler_redundant::*;
 use self::scheduler_rr::*;
+use self::scheduler_leocc::*;
 use crate::connection::path::PathMap;
 use crate::connection::space::PacketNumSpaceMap;
 use crate::connection::space::SentPacket;
@@ -57,6 +58,7 @@ pub(crate) trait MultipathScheduler {
 
     /// Process a path event.
     fn on_path_updated(&mut self, paths: &mut PathMap, event: PathEvent) {}
+    fn on_packet_received(&mut self, _pid: usize, _time: std::time::Instant) {}
 }
 
 /// Available multipath scheduling algorithms.
@@ -219,4 +221,4 @@ pub(crate) mod tests {
 mod scheduler_minrtt;
 mod scheduler_redundant;
 mod scheduler_rr;
-mod scheduler_leocc
+pub mod scheduler_leocc;

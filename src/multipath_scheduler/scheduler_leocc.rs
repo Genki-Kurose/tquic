@@ -45,15 +45,6 @@ impl LeoccScheduler {
             redundant_duration: Duration::from_millis(150),
         }
     }
-
-    /// 【注意】 MultipathScheduler トレイトにはパケット受信のフックがないため、
-    /// コネクションのパケット受信ループ（例: connection.rs のプロセス内）から
-    /// 対象パスのパケットを受け取った際に手動でこのメソッドを呼び出す必要があります。
-    pub fn on_packet_received(&mut self, path_id: usize, now: Instant) {
-        if path_id == 0 {
-            self.last_rx_time = Some(now);
-        }
-    }
 }
 
 impl MultipathScheduler for LeoccScheduler {
@@ -167,6 +158,12 @@ impl MultipathScheduler for LeoccScheduler {
                     space.buffered.push_back(frame.clone(), BufferType::High);
                 }
             }
+        }
+    }
+    fn on_packet_received(&mut self, pid: usize, time: std::time::Instant) {
+        // 元々独自メソッドにあったロジックをここに記述する
+        if pid == 0 {
+            self.last_rx_time = Some(time);
         }
     }
 }
