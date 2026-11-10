@@ -7725,6 +7725,38 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn conn_multipath_transfer_leocc() -> Result<()> {
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.set_cid_len(crate::MAX_CID_LEN);
+        client_config.enable_multipath(true);
+        client_config.set_multipath_algorithm(MultipathAlgorithm::Leocc);
+        client_config.set_ack_eliciting_threshold(1);
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.set_cid_len(crate::MAX_CID_LEN);
+
+        // Handshake with multipath enabled
+        server_config.enable_multipath(true);
+        server_config.set_multipath_algorithm(MultipathAlgorithm::Leocc);
+        server_config.set_ack_eliciting_threshold(1);
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+
+        let blocks = vec![
+            Bytes::from_static(b"Everything"),
+            Bytes::from_static(b"Over"),
+            Bytes::from_static(b"Multipath QUIC"),
+        ];
+
+        conn_multipath_transfer(&mut test_pair, blocks)?;
+
+        for (i, path) in test_pair.server.paths.iter_mut() {
+            let s = path.stats();
+            assert!(s.sent_count > 3);
+            assert!(s.recv_count > 3);
+        }
+        Ok(())
+    }
+
+    #[test]
     #[cfg(feature = "qlog")]
     fn conn_write_qlog() -> Result<()> {
         let clog = NamedTempFile::new().unwrap();
