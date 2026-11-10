@@ -83,6 +83,9 @@ pub enum MultipathAlgorithm {
     /// distribution across all path is equal. It is only used for testing
     /// purposes.
     RoundRobin,
+
+    // for leo
+    Leocc,
 }
 
 impl FromStr for MultipathAlgorithm {
@@ -95,6 +98,8 @@ impl FromStr for MultipathAlgorithm {
             Ok(MultipathAlgorithm::Redundant)
         } else if algor.eq_ignore_ascii_case("roundrobin") {
             Ok(MultipathAlgorithm::RoundRobin)
+        } else if algor.eq_ignore_ascii_case("leocc"){
+            Ok(MultipathAlgorithm::Leocc)
         } else {
             Err(Error::InvalidConfig("unknown".into()))
         }
@@ -107,6 +112,7 @@ pub(crate) fn build_multipath_scheduler(conf: &MultipathConfig) -> Box<dyn Multi
         MultipathAlgorithm::MinRtt => Box::new(MinRttScheduler::new(conf)),
         MultipathAlgorithm::Redundant => Box::new(RedundantScheduler::new(conf)),
         MultipathAlgorithm::RoundRobin => Box::new(RoundRobinScheduler::new(conf)),
+        MultipathAlgorithm::Leocc => Box::new(LeoccScheduler::new(conf))
     }
 }
 
@@ -115,6 +121,7 @@ pub(crate) fn buffer_required(algor: MultipathAlgorithm) -> bool {
         MultipathAlgorithm::MinRtt => false,
         MultipathAlgorithm::Redundant => true,
         MultipathAlgorithm::RoundRobin => false,
+        MultipathAlgorithm::Leocc => true,
     }
 }
 
@@ -196,6 +203,10 @@ pub(crate) mod tests {
             ("Roundrobin", Ok(MultipathAlgorithm::RoundRobin)),
             ("RoundRobin", Ok(MultipathAlgorithm::RoundRobin)),
             ("ROUNDROBIN", Ok(MultipathAlgorithm::RoundRobin)),
+            ("leocc", Ok(MultipathAlgorithm::Leocc)),
+            ("Leocc", Ok(MultipathAlgorithm::Leocc)),
+            ("LeoCC", Ok(MultipathAlgorithm::Leocc)),
+            ("LEOCC", Ok(MultipathAlgorithm::Leocc)),
             ("redun", Err(Error::InvalidConfig("unknown".into()))),
         ];
 
@@ -208,3 +219,4 @@ pub(crate) mod tests {
 mod scheduler_minrtt;
 mod scheduler_redundant;
 mod scheduler_rr;
+mod scheduler_leocc

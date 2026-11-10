@@ -701,6 +701,16 @@ impl Connection {
 
         self.flags.insert(NeedSendAckEliciting);
 
+        // ▼ ここに追加: LeoccScheduler へのパケット受信通知フック ▼
+        if let Some(ref mut scheduler) = self.multipath_scheduler {
+            // TQUICの既存設計に合わせ、ダウンキャストでLeoccSchedulerを取り出す
+            if let Some(leocc) = scheduler.as_any_mut().downcast_mut::<LeoccScheduler>() {
+                // 確定済みの pid と PacketInfo 内の受信時刻を渡す
+                leocc.on_packet_received(pid, info.time);
+            }
+        }
+        // ▲ ここまで ▲
+
         Ok(read)
     }
 
