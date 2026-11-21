@@ -538,6 +538,16 @@ impl Worker {
         terminated: Arc<AtomicBool>,
     ) -> Result<Self> {
         let mut config = Config::new()?;
+        // ▼ 1. ウィンドウの最大上限（キャップ）を引き上げる (例: 50MB)
+        config.set_max_connection_window(50_000_000);
+        config.set_max_stream_window(50_000_000);
+
+        // ▼ 2. 実際の初期受信バッファを拡大する
+        config.set_initial_max_data(50_000_000);
+        config.set_initial_max_stream_data_bidi_local(50_000_000);
+        config.set_initial_max_stream_data_bidi_remote(50_000_000);
+        config.set_initial_max_stream_data_uni(50_000_000);
+        // ▲ 追加ここまで ▲
         config.enable_stateless_reset(!option.disable_stateless_reset);
         config.set_max_handshake_timeout(option.handshake_timeout);
         config.set_max_idle_timeout(option.idle_timeout);
