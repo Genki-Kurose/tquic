@@ -26,23 +26,38 @@ use crate::Error;
 use crate::MultipathConfig;
 use crate::Result;
 
-/// LeoccScheduler implements a path selection algorithm based on the LEOCC paper.
-/// It maintains a stable mode (using only Path 0) and switches to a redundant mode
-/// (using Path 0 and Path 1) when an outage is detected on the primary path.
+/// LeoCCの状態を管理する列挙型
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum LeoccState {
+    Stable,    // 安定状態（Path 0 のみを使用）
+    Redundant, // 接続再構成中（バイキャストモード）
+}
+
+/// LeoccScheduler implements a path selection algorithm inspired by the LEOCC paper.
+/// It dynamically detects connection reconfiguration via Response Interval (RI) anomalies,
+/// and ends the redundant mode only when the packet flow has stably recovered.
 pub struct LeoccScheduler {
+    state: LeoccState,
     last_rx_time: Option<Instant>,
-    reconfig_until: Option<Instant>,
-    outage_threshold: Duration,
-    redundant_duration: Duration,
+    last_ri: Duration,
+    recovery_acks: u32,
+
+    // LeoCCに基づく設定可能な閾値パラメータ
+    outage_ri_threshold: Duration, // RIがこれを越えたらOutage（再構成）とみなす
+    flow_recovery_count: u32,      // 安定化を確認するための連続ACK数
 }
 
 impl LeoccScheduler {
     pub fn new(_conf: &MultipathConfig) -> LeoccScheduler {
         LeoccScheduler {
+            state: LeoccState::Stable,
             last_rx_time: None,
-            reconfig_until: None,
-            outage_threshold: Duration::from_millis(45),
-            redundant_duration: Duration::from_millis(150),
+            last_ri: Duration::from_millis(0),
+            recovery_acks: 0,
+            
+            // パラメータの設定
+            outage_ri_threshold: Duration::from_millis(45),
+            flow_recovery_count: 10, // 10回連続で安定したRIを観測したら回復とみなす
         }
     }
 }
@@ -56,22 +71,31 @@ impl MultipathScheduler for LeoccScheduler {
         _streams: &mut StreamMap,
     ) -> Result<usize> {
         let now = Instant::now();
-        let mut is_reconfiguring = false;
+        let mut trigger_redundant = false;
 
-        // 1. 応答間隔 (RI) の外れ値検知
-        if let Some(rx_time) = self.last_rx_time {
-            if now.duration_since(rx_time) > self.outage_threshold {
-                self.reconfig_until = Some(now + self.redundant_duration);
+        // 1. 接続再構成の検知 (開始トリガー)
+        if self.state == LeoccState::Stable {
+            // (A) Response Interval (RI) の監視による Outage 検知
+            if let Some(rx_time) = self.last_rx_time {
+                let current_ri = now.saturating_duration_since(rx_time);
+                
+                // 現在の無応答期間が閾値を越え、かつ直近のRIよりも急激に増大している場合
+                // (Maxフィルタ的なジッタとスパイクの切り分け)
+                if current_ri > self.outage_ri_threshold && current_ri > self.last_ri.saturating_mul(2) {
+                    debug!("LeoccScheduler: Outage detected (RI: {:?}). Switching to Redundant mode.", current_ri);
+                    trigger_redundant = true;
+                }
             }
+
+            // (B) Base RTT のシフト検知 (発展的な実装用)
+            // TQUICのバージョンに応じて `path.recovery.rtt_stats().min_rtt()` 等が
+            // 取得可能な場合、ここにベースRTTのジャンプ判定を組み込むことができます。
         }
 
-        // 2. Redundantモードの維持判定
-        if let Some(until) = self.reconfig_until {
-            if now <= until {
-                is_reconfiguring = true;
-            } else {
-                self.reconfig_until = None;
-            }
+        // 状態遷移の実行
+        if trigger_redundant {
+            self.state = LeoccState::Redundant;
+            self.recovery_acks = 0; // 回復確認用のカウンタをリセット
         }
 
         // 利用可能なパスを探索
@@ -80,7 +104,6 @@ impl MultipathScheduler for LeoccScheduler {
         let mut any_ready_pid = None;
 
         for (pid, path) in paths.iter_mut() {
-            // パスがアクティブでない、または送信枠（cwnd）がない場合はスキップ[cite: 27]
             if !path.active() || !path.recovery.can_send() {
                 continue;
             }
@@ -95,7 +118,7 @@ impl MultipathScheduler for LeoccScheduler {
         }
 
         // 3. 状態に応じたパスの選択
-        if is_reconfiguring {
+        if self.state == LeoccState::Redundant {
             // Redundantモード: on_sent で他方へ複製されるため、準備ができているパスを返す
             if path1_ready {
                 return Ok(1);
@@ -121,21 +144,14 @@ impl MultipathScheduler for LeoccScheduler {
     fn on_sent(
         &mut self,
         packet: &SentPacket,
-        now: Instant,
+        _now: Instant,
         path_id: usize,
         paths: &mut PathMap,
         spaces: &mut PacketNumSpaceMap,
         _streams: &mut StreamMap,
     ) {
         // Redundantモード中のみパケットを複製する
-        let mut is_reconfiguring = false;
-        if let Some(until) = self.reconfig_until {
-            if now <= until {
-                is_reconfiguring = true;
-            }
-        }
-
-        if !is_reconfiguring {
+        if self.state != LeoccState::Redundant {
             return;
         }
 
@@ -143,7 +159,7 @@ impl MultipathScheduler for LeoccScheduler {
             return;
         }
 
-        // RedundantSchedulerの実装に倣い、他のアクティブなパスにフレームをインジェクト[cite: 28]
+        // 他のアクティブなパスにフレームをインジェクト
         for (pid, path) in paths.iter() {
             if pid == path_id || !path.active() {
                 continue;
@@ -160,9 +176,33 @@ impl MultipathScheduler for LeoccScheduler {
             }
         }
     }
-    fn on_packet_received(&mut self, pid: usize, time: std::time::Instant) {
-        // 元々独自メソッドにあったロジックをここに記述する
+
+    /// TQUICのパケット受信ループから呼び出されるフック
+    fn on_packet_received(&mut self, pid: usize, time: Instant) {
         if pid == 0 {
+            if let Some(last) = self.last_rx_time {
+                let current_ri = time.saturating_duration_since(last);
+                self.last_ri = current_ri;
+
+                // 2. パケットフロー回復の検知 (終了トリガー)
+                if self.state == LeoccState::Redundant {
+                    // RIが正常な範囲（スパイクしていない）であれば安定ACKとみなす
+                    if current_ri <= self.outage_ri_threshold {
+                        self.recovery_acks += 1;
+                        
+                        // 指定回数連続で安定したACKを受信したらStableに復帰
+                        if self.recovery_acks >= self.flow_recovery_count {
+                            debug!("LeoccScheduler: Flow recovered ({} stable ACKs). Switching to Stable mode.", self.recovery_acks);
+                            self.state = LeoccState::Stable;
+                            self.recovery_acks = 0;
+                        }
+                    } else {
+                        // RIが乱れた場合は連続カウントをリセット（ジッタやOutageの継続）
+                        self.recovery_acks = 0;
+                    }
+                }
+            }
+            // 受信時刻の更新
             self.last_rx_time = Some(time);
         }
     }
