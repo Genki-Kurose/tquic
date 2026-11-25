@@ -639,8 +639,17 @@ impl Connection {
         // Write events to qlog.
         #[cfg(feature = "qlog")]
         if let Some(qlog) = &mut self.qlog {
+            let (local_addr, remote_addr) = if let Ok(path) = self.paths.get_mut(pid) {
+                let local = path.local_addr().to_string();
+                let remote = path.remote_addr().to_string();
+                path.recovery.set_qlog_path_info(pid, local.clone(), remote.clone());
+                (Some(local), Some(remote))
+            } else {
+                (None, None)
+            };
+
             // Write TransportPacketReceived event to qlog.
-            Self::qlog_quic_packet_received(qlog, &hdr, pkt_num, read, payload_len, qframes);
+            Self::qlog_quic_packet_received(qlog, &hdr, pkt_num, read, payload_len, qframes, Some(pid), local_addr, remote_addr);
 
             // Write RecoveryMetricsUpdate event to qlog.
             if let Ok(path) = self.paths.get_mut(pid) {
@@ -1861,7 +1870,17 @@ impl Connection {
             for frame in &sent_pkt.frames {
                 qframes.push(frame.to_qlog());
             }
-            Self::qlog_quic_packet_sent(qlog, &hdr, pkt_num, written, payload_len, qframes);
+            
+            let (local_addr, remote_addr) = if let Ok(path) = self.paths.get_mut(path_id) {
+                let local = path.local_addr().to_string();
+                let remote = path.remote_addr().to_string();
+                path.recovery.set_qlog_path_info(path_id, local.clone(), remote.clone());
+                (Some(local), Some(remote))
+            } else {
+                (None, None)
+            };
+
+            Self::qlog_quic_packet_sent(qlog, &hdr, pkt_num, written, payload_len, qframes, Some(path_id), local_addr, remote_addr);
 
             // Write RecoveryMetricsUpdate event to qlog.
             if let Ok(path) = self.paths.get_mut(path_id) {
@@ -4169,6 +4188,9 @@ impl Connection {
         pkt_len: usize,
         payload_len: usize,
         qlog_frames: Vec<qlog::events::QuicFrame>,
+        path_id: Option<usize>,
+        local_addr: Option<String>,
+        remote_addr: Option<String>,
     ) {
         let qlog_pkt_hdr = events::PacketHeader::new_with_type(
             hdr.pkt_type.to_qlog(),
@@ -4192,6 +4214,9 @@ impl Connection {
             raw: Some(qlog_raw_info),
             datagram_id: None,
             trigger: None,
+            path_id,
+            local_addr,
+            remote_addr,
         };
         qlog.add_event_data(time::Instant::now(), ev_data).ok();
     }
@@ -4205,6 +4230,9 @@ impl Connection {
         pkt_len: usize,
         payload_len: usize,
         qlog_frames: Vec<qlog::events::QuicFrame>,
+        path_id: Option<usize>,
+        local_addr: Option<String>,
+        remote_addr: Option<String>,
     ) {
         let qlog_pkt_hdr = events::PacketHeader::new_with_type(
             hdr.pkt_type.to_qlog(),
@@ -4231,6 +4259,9 @@ impl Connection {
             datagram_id: None,
             is_mtu_probe_packet: None,
             trigger: None,
+            path_id,
+            local_addr,
+            remote_addr,
         };
         qlog.add_event_data(now, ev_data).ok();
     }

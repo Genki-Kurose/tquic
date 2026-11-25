@@ -257,6 +257,9 @@ pub enum EventData {
         datagram_id: Option<u32>,
         is_mtu_probe_packet: Option<bool>,
         trigger: Option<PacketSentTrigger>,
+        path_id: Option<usize>,
+        local_addr: Option<String>,
+        remote_addr: Option<String>,
     },
 
     /// This event indicates a QUIC-level packet was received.
@@ -271,6 +274,9 @@ pub enum EventData {
         raw: Option<RawInfo>,
         datagram_id: Option<u32>,
         trigger: Option<PacketReceivedTrigger>,
+        path_id: Option<usize>,
+        local_addr: Option<String>,
+        remote_addr: Option<String>,
     },
 
     /// This event indicates a QUIC-level packet was dropped.
@@ -447,6 +453,9 @@ pub enum EventData {
         ssthresh: Option<u64>,
         packets_in_flight: Option<u64>,
         pacing_rate: Option<u64>,
+        path_id: Option<usize>,
+        local_addr: Option<String>,
+        remote_addr: Option<String>,
     },
 
     /// This event signifies when the congestion controller enters a significant
@@ -477,6 +486,10 @@ pub enum EventData {
         frames: Option<Vec<QuicFrame>>,
         is_mtu_probe_packet: Option<bool>,
         trigger: Option<PacketLostTrigger>,
+        path_id: Option<usize>,
+        local_addr: Option<String>,
+        remote_addr: Option<String>,
+
     },
 
     /// This event indicates which data was marked for retransmit upon detecting a
@@ -1675,6 +1688,9 @@ pub mod tests {
             datagram_id: None,
             is_mtu_probe_packet: None,
             trigger: None,
+            path_id: None,
+            local_addr: None,
+            remote_addr: None,
         };
 
         let event = Event::new(1234567000.0, event_data);

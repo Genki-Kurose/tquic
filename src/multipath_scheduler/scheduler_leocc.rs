@@ -56,7 +56,7 @@ impl LeoccScheduler {
             recovery_acks: 0,
             
             // パラメータの設定
-            outage_ri_threshold: Duration::from_millis(45),
+            outage_ri_threshold: Duration::from_millis(200),
             flow_recovery_count: 10, // 10回連続で安定したRIを観測したら回復とみなす
         }
     }

@@ -121,6 +121,14 @@ pub struct Recovery {
 
     /// Trace id.
     trace_id: String,
+
+    // struct Recovery の末尾に追加
+    #[cfg(feature = "qlog")]
+    qlog_path_id: Option<usize>,
+    #[cfg(feature = "qlog")]
+    qlog_local_addr: Option<String>,
+    #[cfg(feature = "qlog")]
+    qlog_remote_addr: Option<String>,
 }
 
 impl Recovery {
@@ -146,6 +154,13 @@ impl Recovery {
             #[cfg(feature = "qlog")]
             last_metrics: RecoveryMetrics::default(),
             trace_id: String::from(""),
+            // Recovery::new の返り値に追加
+            #[cfg(feature = "qlog")]
+            qlog_path_id: None,
+            #[cfg(feature = "qlog")]
+            qlog_local_addr: None,
+            #[cfg(feature = "qlog")]
+            qlog_remote_addr: None,
         }
     }
 
@@ -972,6 +987,21 @@ impl Recovery {
         self.stats.pto_count = self.pto_count as u64;
     }
 
+    /// Set path info for qlog events.
+    #[cfg(feature = "qlog")]
+    pub(crate) fn set_qlog_path_info(
+        &mut self,
+        path_id: usize,
+        local_addr: String,
+        remote_addr: String,
+    ) {
+        if self.qlog_path_id.is_none() {
+            self.qlog_path_id = Some(path_id);
+            self.qlog_local_addr = Some(local_addr);
+            self.qlog_remote_addr = Some(remote_addr);
+        }
+    }
+
     /// Write a qlog RecoveryMetricsUpdated event if any recovery metric is updated.
     #[cfg(feature = "qlog")]
     pub(crate) fn qlog_recovery_metrics_updated(&mut self, qlog: &mut qlog::QlogWriter) {
@@ -1041,6 +1071,9 @@ impl Recovery {
             ssthresh: None,
             packets_in_flight: None,
             pacing_rate,
+            path_id: self.qlog_path_id,
+            local_addr: self.qlog_local_addr.clone(),
+            remote_addr: self.qlog_remote_addr.clone(),
         };
         qlog.add_event_data(Instant::now(), ev_data).ok();
     }
@@ -1061,6 +1094,9 @@ impl Recovery {
             frames: None,
             is_mtu_probe_packet: None,
             trigger: None,
+            path_id: self.qlog_path_id,
+            local_addr: self.qlog_local_addr.clone(),
+            remote_addr: self.qlog_remote_addr.clone(),
         };
         qlog.add_event_data(Instant::now(), ev_data).ok();
     }
