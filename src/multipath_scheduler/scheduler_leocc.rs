@@ -79,17 +79,19 @@ impl MultipathScheduler for LeoccScheduler {
             if let Some(rx_time) = self.last_rx_time {
                 let current_ri = now.saturating_duration_since(rx_time);
                 
-                // 現在の無応答期間が閾値を越え、かつ直近のRIよりも急激に増大している場合
-                // (Maxフィルタ的なジッタとスパイクの切り分け)
-                if current_ri > self.outage_ri_threshold && current_ri > self.last_ri.saturating_mul(2) {
-                    debug!("LeoccScheduler: Outage detected (RI: {:?}). Switching to Redundant mode.", current_ri);
+                // 修正: 一定時間（例: 400ms）以上無応答なら last_ri に関係なく Outage とみなす
+                let hard_outage_limit = Duration::from_millis(400);
+                let dynamic_trigger = current_ri > self.outage_ri_threshold
+                    && current_ri > self.last_ri.saturating_mul(2);
+
+                if dynamic_trigger || current_ri > hard_outage_limit {
+                    eprintln!(
+                        "[Leocc] Outage detected (current_ri: {:?}, last_ri: {:?}). Switching to Redundant.",
+                        current_ri, self.last_ri
+                    );
                     trigger_redundant = true;
                 }
             }
-
-            // (B) Base RTT のシフト検知 (発展的な実装用)
-            // TQUICのバージョンに応じて `path.recovery.rtt_stats().min_rtt()` 等が
-            // 取得可能な場合、ここにベースRTTのジャンプ判定を組み込むことができます。
         }
 
         // 状態遷移の実行
@@ -180,29 +182,32 @@ impl MultipathScheduler for LeoccScheduler {
     /// TQUICのパケット受信ループから呼び出されるフック
     fn on_packet_received(&mut self, pid: usize, time: Instant) {
         if pid == 0 {
+            if self.last_rx_time.is_none() {
+                eprintln!("[Leocc] First packet received on path 0. Monitoring started.");
+            }
+
             if let Some(last) = self.last_rx_time {
                 let current_ri = time.saturating_duration_since(last);
                 self.last_ri = current_ri;
 
                 // 2. パケットフロー回復の検知 (終了トリガー)
                 if self.state == LeoccState::Redundant {
-                    // RIが正常な範囲（スパイクしていない）であれば安定ACKとみなす
                     if current_ri <= self.outage_ri_threshold {
                         self.recovery_acks += 1;
                         
-                        // 指定回数連続で安定したACKを受信したらStableに復帰
                         if self.recovery_acks >= self.flow_recovery_count {
-                            debug!("LeoccScheduler: Flow recovered ({} stable ACKs). Switching to Stable mode.", self.recovery_acks);
+                            eprintln!(
+                                "[Leocc] Flow recovered ({} stable ACKs). Switching to Stable.",
+                                self.recovery_acks
+                            );
                             self.state = LeoccState::Stable;
                             self.recovery_acks = 0;
                         }
                     } else {
-                        // RIが乱れた場合は連続カウントをリセット（ジッタやOutageの継続）
                         self.recovery_acks = 0;
                     }
                 }
             }
-            // 受信時刻の更新
             self.last_rx_time = Some(time);
         }
     }
