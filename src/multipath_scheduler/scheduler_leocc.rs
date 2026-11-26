@@ -50,6 +50,7 @@ pub struct LeoccScheduler {
 impl LeoccScheduler {
     pub fn new(_conf: &MultipathConfig) -> LeoccScheduler {
         LeoccScheduler {
+            eprintln!("[Leocc] Scheduler initialized!");
             state: LeoccState::Stable,
             last_rx_time: None,
             last_ri: Duration::from_millis(0),
